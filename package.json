@@ -1,0 +1,13 @@
+{
+  "name": "my-supabase-project",
+  "version": "1.0.0",
+  "description": "Supabase Branch Mapping Project",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@supabase/supabase-js": "^2.0.0"
+  }
+}

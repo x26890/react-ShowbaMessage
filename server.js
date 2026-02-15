@@ -9,7 +9,6 @@ app.use(cors());
 app.use(express.json());
 
 // --- Supabase 雲端配置 (包含資料庫與儲存) ---
-// 使用 trim() 防止環境變數夾帶隱形空格導致的連線錯誤
 const supabaseUrl = (process.env.SUPABASE_URL || '').trim();
 const supabaseKey = (process.env.SUPABASE_KEY || '').trim();
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -21,11 +20,10 @@ const upload = multer({ storage });
 // --- 英文路徑映射表 ---
 const branchMap = {
   '建工店': 'Jiangong',
-  '鼎山店': 'Dingshan',
-  '鳳山店': 'Fengshan'
+  '鳥松店': 'Niaosong' // 補上你之前提到的鳥松店
 };
 
-// --- API 路由 (使用 SDK 替換 Pool) ---
+// --- API 路由 ---
 
 // 1. 登入
 app.post('/api/login', async (req, res) => {
@@ -106,52 +104,55 @@ app.get('/api/shelf', async (req, res) => {
   }
 });
 
-// 5. 新增或更新貨架資料 (包含圖片處理)
+// 5. 新增或更新貨架資料 (優化：支援圖片刪除邏輯)
 app.post('/api/shelf', upload.single('image'), async (req, res) => {
-  const { id, floor, location, side, item_list, branch_name } = req.body;
+  const { id, floor, location, side, item_list, branch_name, imageDeleted } = req.body;
   let image_url = req.body.image_url;
 
   try {
-    // 圖片上傳邏輯
-    if (req.file) {
-      // 刪除舊圖 (如有 ID)
-      if (id && id !== 'undefined' && id !== 'null') {
-        const { data: oldData } = await supabase
-          .from('shelf')
-          .select('image_url')
-          .eq('id', id)
-          .single();
+    // A. 抓取舊資料確認原本是否有圖片
+    let existingImageUrl = null;
+    if (id && id !== 'undefined' && id !== 'null') {
+      const { data: oldData } = await supabase.from('shelf').select('image_url').eq('id', id).single();
+      if (oldData) existingImageUrl = oldData.image_url;
+    }
 
-        if (oldData && oldData.image_url && oldData.image_url.includes('supabase.co')) {
-          try {
-            const urlParts = oldData.image_url.split('/storage/v1/object/public/shelf-images/');
-            if (urlParts.length > 1) {
-              const pathPart = decodeURIComponent(urlParts[1]);
-              await supabase.storage.from('shelf-images').remove([pathPart]);
-              console.log(`♻️ 舊圖已清理: ${pathPart}`);
-            }
-          } catch (e) { console.log("刪除舊圖失敗"); }
-        }
-      }
-      
+    // B. 圖片處理邏輯
+    if (req.file) {
+      // 情況 1：上傳新圖，先準備清理舊圖
       const branchCode = branchMap[branch_name] || 'Other';
       const safeFileName = `${Date.now()}-${req.file.originalname.replace(/[^\w.-]/g, '_')}`;
       const filePath = `${branchCode}/floor${floor}/${location}/${safeFileName}`;
       
       const { error: uploadError } = await supabase.storage
         .from('shelf-images')
-        .upload(filePath, req.file.buffer, {
-          contentType: req.file.mimetype,
-          upsert: true
-        });
+        .upload(filePath, req.file.buffer, { contentType: req.file.mimetype, upsert: true });
 
       if (uploadError) throw uploadError;
 
       const { data: publicData } = supabase.storage.from('shelf-images').getPublicUrl(filePath);
       image_url = publicData.publicUrl;
+    } else if (imageDeleted === 'true') {
+      // 情況 2：前端標記刪除圖片 (按了 ✕)
+      image_url = null;
+    } else {
+      // 情況 3：沒動圖片，沿用原本的 URL
+      image_url = existingImageUrl;
     }
 
-    // 更新或新增資料
+    // C. 如果圖片發生變動（換新圖或刪除），清理雲端 Storage 舊實體檔案
+    if ((req.file || imageDeleted === 'true') && existingImageUrl && existingImageUrl.includes('supabase.co')) {
+      try {
+        const urlParts = existingImageUrl.split('/storage/v1/object/public/shelf-images/');
+        if (urlParts.length > 1) {
+          const pathPart = decodeURIComponent(urlParts[1]);
+          await supabase.storage.from('shelf-images').remove([pathPart]);
+          console.log(`♻️ 舊實體檔案已清理: ${pathPart}`);
+        }
+      } catch (e) { console.log("清理舊圖失敗 (不影響存檔)"); }
+    }
+
+    // D. 更新或新增資料庫
     if (id && id !== 'undefined' && id !== 'null') {
       const { error } = await supabase
         .from('shelf')
